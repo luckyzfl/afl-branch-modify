@@ -148,7 +148,8 @@ static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
                    child_timed_out;   /* Traced process timed out?        */
 
-EXP_ST u32 queued_paths,              /* Total number of queued testcases */
+EXP_ST u32 total_branches,            /* Total braches                    */
+           queued_paths,              /* Total number of queued testcases */
            queued_variable,           /* Testcases with variable behavior */
            queued_at_start,           /* Total number of initial inputs   */
            queued_discovered,         /* Items discovered during this run */
@@ -3378,6 +3379,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
 
   u8* fn = alloc_printf("%s/fuzzer_stats", out_dir);
   s32 fd;
+  u32 t_bytes, t_bits;
   FILE* f;
 
   fd = open(fn, O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -3403,6 +3405,9 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
     last_eps  = eps;
   }
 
+  t_bits = total_branches;
+  t_bytes = count_non_255_bytes(virgin_bits);
+
   fprintf(f, "start_time        : %llu\n"
              "last_update       : %llu\n"
              "fuzzer_pid        : %u\n"
@@ -3427,6 +3432,8 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              "last_hang         : %llu\n"
              "execs_since_crash : %llu\n"
              "exec_timeout      : %u\n"
+             "t_bits(branch)    : %u\n"
+             "t_bytes           : %u\n"
              "afl_banner        : %s\n"
              "afl_version       : " VERSION "\n"
              "target_mode       : %s%s%s%s%s%s%s\n"
@@ -3438,7 +3445,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              queued_variable, stability, bitmap_cvg, unique_crashes,
              unique_hangs, last_path_time / 1000, last_crash_time / 1000,
              last_hang_time / 1000, total_execs - last_crash_execs,
-             exec_tmout, use_banner,
+             exec_tmout, t_bits, t_bytes, use_banner,
              qemu_mode ? "qemu " : "", dumb_mode ? " dumb " : "",
              no_forkserver ? "no_forksrv " : "", crash_mode ? "crash " : "",
              persistent_mode ? "persistent " : "", deferred_mode ? "deferred " : "",
@@ -3456,36 +3463,42 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
 
 static void maybe_update_plot_file(double bitmap_cvg, double eps) {
 
-  static u32 prev_qp, prev_pf, prev_pnf, prev_ce, prev_md;
+  static u32 prev_qp, prev_pf, prev_pnf, prev_ce, prev_md, prev_t_bits;
   static u64 prev_qc, prev_uc, prev_uh;
+
 
   if (prev_qp == queued_paths && prev_pf == pending_favored && 
       prev_pnf == pending_not_fuzzed && prev_ce == current_entry &&
       prev_qc == queue_cycle && prev_uc == unique_crashes &&
-      prev_uh == unique_hangs && prev_md == max_depth) return;
+      prev_uh == unique_hangs && prev_md == max_depth && prev_t_bits == total_branches) return;
 
-  prev_qp  = queued_paths;
-  prev_pf  = pending_favored;
-  prev_pnf = pending_not_fuzzed;
-  prev_ce  = current_entry;
-  prev_qc  = queue_cycle;
-  prev_uc  = unique_crashes;
-  prev_uh  = unique_hangs;
-  prev_md  = max_depth;
-
+  
   /* Fields in the file:
 
-     unix_time, cycles_done, cur_path, paths_total, paths_not_fuzzed,
+     unix_time, ,total_branches,cycles_done, cur_path, paths_total, paths_not_fuzzed,
      favored_not_fuzzed, unique_crashes, unique_hangs, max_depth,
      execs_per_sec */
 
-  fprintf(plot_file, 
-          "%llu, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %0.02f\n",
-          get_cur_time() / 1000, queue_cycle - 1, current_entry, queued_paths,
+  char ret=fprintf(plot_file, 
+          "%llu, %u, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %0.02f\n",
+          get_cur_time() / 1000, total_branches, queue_cycle - 1, current_entry, queued_paths,
           pending_not_fuzzed, pending_favored, bitmap_cvg, unique_crashes,
           unique_hangs, max_depth, eps); /* ignore errors */
 
   fflush(plot_file);
+
+  if(ret > 0)
+  {
+    prev_qp  = queued_paths;
+    prev_pf  = pending_favored;
+    prev_pnf = pending_not_fuzzed;
+    prev_ce  = current_entry;
+    prev_qc  = queue_cycle;
+    prev_uc  = unique_crashes;
+    prev_uh  = unique_hangs;
+    prev_md  = max_depth;
+    prev_t_bits = total_branches;
+  }
 
 }
 
@@ -3963,6 +3976,8 @@ static void show_stats(void) {
   /* Compute some mildly useful bitmap stats. */
 
   t_bits = (MAP_SIZE << 3) - count_bits(virgin_bits);
+
+  total_branches = t_bits;
 
   /* Now, for the visuals... */
 
@@ -7192,7 +7207,7 @@ EXP_ST void setup_dirs_fds(void) {
   plot_file = fdopen(fd, "w");
   if (!plot_file) PFATAL("fdopen() failed");
 
-  fprintf(plot_file, "# unix_time, cycles_done, cur_path, paths_total, "
+  fprintf(plot_file, "# unix_time, branches_total, cycles_done, cur_path, paths_total, "
                      "pending_total, pending_favs, map_size, unique_crashes, "
                      "unique_hangs, max_depth, execs_per_sec\n");
                      /* ignore errors */
